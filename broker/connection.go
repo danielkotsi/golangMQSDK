@@ -49,6 +49,16 @@ func NewConnection(server *Server, netConn net.Conn) *Connection {
 	}
 }
 
+func (c *Connection) Serve() error {
+	for {
+		c.WriteMessage("hello")
+		log.Println("serving now")
+		var str string
+		if err := c.ReadMessage(&str); err != nil {
+			return err
+		}
+	}
+}
 func (c *Connection) RunHandshake() error {
 	//read Header
 	err := c.ReadProtocolHeader()

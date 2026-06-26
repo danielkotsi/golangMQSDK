@@ -62,4 +62,10 @@ func (s *Server) HandleConnection(c net.Conn) {
 		log.Println(err)
 		return
 	}
+
+	err = conn.Serve()
+	if err != nil {
+		log.Println(err)
+		return
+	}
 }

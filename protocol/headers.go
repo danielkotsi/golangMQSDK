@@ -1,19 +1,47 @@
 package protocol
 
+import "encoding/json"
+
 //for now until it is more clear to me the AuthMechanism is set to "plain" and it is hardcoded, might inspect later other options
 
 const (
-	ProtocolName          = "GOMQ"
-	ProtocolVersion       = "1"
-	ProtocolHeader        = ProtocolName + "/" + ProtocolVersion
-	ServerName            = ProtocolName + "-Broker"
+	ProtocolName       = "GOMQ"
+	ProtocolVersion    = "1"
+	ProtocolHeader     = ProtocolName + "/" + ProtocolVersion
+	ServerName         = ProtocolName + "-Broker"
+	AuthMechanismPlain = "plain"
+
+	//handshake
 	TypeConnectionStart   = "connection.start"
 	TypeConnectionStartOK = "connection.start_ok"
 	TypeConnectionTune    = "connection.tune"
 	TypeConnectionTuneOK  = "connection.tune_ok"
 	TypeConnectionOpen    = "connection.open"
 	TypeConnectionOpenOK  = "connection.open_ok"
-	AuthMechanismPlain    = "plain"
+
+	//basic
+	//client
+	BasicPublish = "basic.publish"
+	BasicConsume = "basic.consume"
+	BasicAck     = "basic.ack"
+
+	//server
+	BasicDeliver   = "basic.deliver"
+	BasicConsumeOK = "basic.consume-ok"
+
+	//AMQP channel
+	//client
+	ChannelOpen = "channel.open"
+	//server
+	ChannelOpenOK = "channel.open-ok"
+
+	//Queue
+	//client
+	QueueDeclare = "queue.declare"
+	QueueBind    = "queue.bind"
+	//server
+	QueueDeclareOK = "queue.declare-ok"
+	QueueBindOK    = "queue.bind-ok"
 )
 
 // this is the protocol overview
@@ -72,4 +100,9 @@ type ConnectionOpen struct {
 // server
 type ConnectionOpenOK struct {
 	Type string `json:"type"`
+}
+
+type Envelope struct {
+	Type    string
+	Payload json.RawMessage
 }

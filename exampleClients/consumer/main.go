@@ -25,5 +25,11 @@ func main() {
 		log.Println(err)
 		return
 	}
+	go c.ReadLoop()
+
+	for msg := range c.Incoming {
+		log.Println("this is a message recieved", msg)
+	}
+
 	log.Println("Connection was opened")
 }

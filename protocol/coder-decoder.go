@@ -48,3 +48,11 @@ func ReadProtocolHeader(r *bufio.Reader) error {
 	}
 	return nil
 }
+
+func ReadEnvelope(r *bufio.Reader, env *Envelope) error {
+	line, err := r.ReadBytes('\n')
+	if err != nil {
+		return err
+	}
+	return json.Unmarshal(line, env)
+}

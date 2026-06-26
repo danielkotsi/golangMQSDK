@@ -3,6 +3,8 @@ package client
 import (
 	"GolangRabbitMQBroker/protocol"
 	"bufio"
+	"encoding/json"
+	"log"
 	"net"
 )
 
@@ -26,6 +28,7 @@ type Client struct {
 	channelMax   int
 	framesMax    int
 	heartbeatSec int
+	Incoming     chan any
 }
 
 func Dial(address string, cfg Config) (*Client, error) {
@@ -41,6 +44,7 @@ func Dial(address string, cfg Config) (*Client, error) {
 		clientName: cfg.ClientName,
 		username:   cfg.Username,
 		password:   cfg.Password,
+		Incoming:   make(chan any, 100),
 	}
 
 	return c, nil
@@ -100,4 +104,42 @@ func (c *Client) WriteProtocolHeader() error {
 
 func (c *Client) ReadMessage(pointer any) error {
 	return protocol.ReadMessage(c.r, pointer)
+}
+
+func (c *Client) ReadEnvelope(env *protocol.Envelope) error {
+	return protocol.ReadEnvelope(c.r, env)
+}
+
+func (c *Client) ReadLoop() {
+	for {
+		var env protocol.Envelope
+		if err := c.ReadEnvelope(&env); err != nil {
+			log.Println(err)
+			close(c.Incoming)
+		}
+		event, err := c.decode(env)
+		if err != nil {
+			log.Println(err)
+		}
+		c.Incoming <- event
+	}
+}
+
+func (c *Client) decode(env protocol.Envelope) (Event, error) {
+	switch env.Type {
+	case "basic.deliver":
+		var delivery Delivery
+		err := json.Unmarshal(env.Payload, &delivery)
+		if err != nil {
+			return Event{}, err
+		}
+		return Event{
+			Type: env.Type,
+			Data: delivery,
+		}, nil
+	case "something else":
+		//case other cases:
+		//etc
+	}
+	return Event{}, nil
 }

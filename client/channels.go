@@ -48,13 +48,8 @@ func (ch *ClientChannel) unRegisterREQ(reqID uint16) {
 }
 
 func (ch *ClientChannel) resolve(reqID uint16, res Response) {
-	fmt.Println(reqID)
 	ch.mu.Lock()
 	respCH, ok := ch.pending[reqID]
-	if !ok {
-		fmt.Println("not okay man")
-		fmt.Println(ch.pending)
-	}
 	if ok {
 		delete(ch.pending, reqID)
 	}
@@ -81,7 +76,6 @@ func (ch *ClientChannel) route(env protocol.Envelope) error {
 		if err != nil {
 			return err
 		}
-		fmt.Println("hey we got into the consume ok")
 		ch.resolve(env.RequestID, Response{
 			Data: consumeOK,
 		})

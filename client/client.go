@@ -5,7 +5,6 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
-	"fmt"
 	"log"
 	"net"
 	"sync"
@@ -76,7 +75,6 @@ func (c *Client) nextChannelid() uint16 {
 
 func (c *Client) OpenChannel(ctx context.Context) (ch *ClientChannel, err error) {
 	id := c.nextChannelid()
-	fmt.Println("this is the channel id:", id)
 	reqID := c.nextRequestID()
 	clientCh := NewClientChannel(id, c)
 	c.mu.Lock()
@@ -101,7 +99,6 @@ func (c *Client) OpenChannel(ctx context.Context) (ch *ClientChannel, err error)
 			delete(c.channels, id)
 			return nil, res.Err
 		}
-		fmt.Println("the channel open ok was recieved")
 		return clientCh, nil
 	case <-ctx.Done():
 		delete(c.channels, id)
@@ -213,12 +210,8 @@ func (c *Client) ReadLoop() {
 		default:
 			ch, ok := c.channels[env.ChannelID]
 			if !ok {
-				log.Println(env.ChannelID)
-				log.Println(env.RequestID)
-				log.Println(env.Type)
 				return
 			}
-			fmt.Println(ch.pending)
 			ch.route(env)
 		}
 	}

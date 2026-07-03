@@ -4,7 +4,6 @@ import (
 	"GolangRabbitMQBroker/protocol"
 	"bufio"
 	"encoding/json"
-	"fmt"
 	"log"
 	"net"
 	"sync"
@@ -83,7 +82,6 @@ func (c *Connection) routeToChannel(env protocol.Envelope) {
 			Message: "channel with requested channelID not open for communication",
 		})
 	}
-	fmt.Println(c.channels)
 	ch.route(env)
 }
 
@@ -178,7 +176,6 @@ func (c *Connection) ChannelOpen(env protocol.Envelope) {
 	if err != nil {
 		log.Println("error unmarshalling")
 	}
-	fmt.Println("request for open channel was made with this channelID: ", channelOpen.ID)
 	id := channelOpen.ID
 	c.mu.Lock()
 	c.channels[id] = &Channel{

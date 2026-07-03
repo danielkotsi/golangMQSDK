@@ -85,7 +85,7 @@ func (c *Client) OpenChannel(ctx context.Context) (ch *ClientChannel, err error)
 
 	respCh := clientCh.registerREQ(reqID)
 
-	if err := c.WriteEnvelope(0, protocol.ChannelOpenType, reqID, protocol.ChannelOpen{
+	if err := c.WriteEnvelope(protocol.ChannelOpenType, reqID, protocol.ChannelOpen{
 		ID: id,
 	}); err != nil {
 		delete(c.channels, id)
@@ -106,7 +106,7 @@ func (c *Client) OpenChannel(ctx context.Context) (ch *ClientChannel, err error)
 	case <-ctx.Done():
 		delete(c.channels, id)
 		ch.unRegisterREQ(reqID)
-		c.WriteEnvelope(0, protocol.ChannelCloseType, c.nextRequestID(), protocol.ChannelClose{
+		c.WriteEnvelope(protocol.ChannelCloseType, c.nextRequestID(), protocol.ChannelClose{
 			ID: id,
 		})
 		return nil, ctx.Err()
@@ -160,13 +160,25 @@ func (c *Client) Handshake() error {
 func (c *Client) WriteMessage(data any) error {
 	return protocol.WriteMessage(c.w, data)
 }
-func (c *Client) WriteEnvelope(channelID uint16, envType protocol.Method, reqID uint16, msg any) error {
+func (c *Client) WriteChannelEnvelope(channelID uint16, envType protocol.Method, reqID uint16, msg any) error {
 	payload, err := json.Marshal(msg)
 	if err != nil {
 		return err
 	}
 	env := protocol.Envelope{
 		ChannelID: channelID,
+		RequestID: reqID,
+		Type:      envType,
+		Payload:   payload,
+	}
+	return protocol.WriteMessage(c.w, env)
+}
+func (c *Client) WriteEnvelope(envType protocol.Method, reqID uint16, msg any) error {
+	payload, err := json.Marshal(msg)
+	if err != nil {
+		return err
+	}
+	env := protocol.Envelope{
 		RequestID: reqID,
 		Type:      envType,
 		Payload:   payload,
@@ -206,6 +218,7 @@ func (c *Client) ReadLoop() {
 				log.Println(env.Type)
 				return
 			}
+			fmt.Println(ch.pending)
 			ch.route(env)
 		}
 	}

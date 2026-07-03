@@ -2,8 +2,9 @@ package main
 
 import (
 	"GolangRabbitMQBroker/client"
+	"GolangRabbitMQBroker/protocol"
 	"context"
-	"fmt"
+	"encoding/json"
 	"log"
 	"time"
 )
@@ -33,16 +34,39 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	channel, err := c.OpenChannel(ctx)
-	fmt.Println(channel)
-	q, err := channel.DeclareQueue("newqueue", ctx)
-	fmt.Println(q, err)
-	// incoming, err := channel.Consume(q.Name, ctx)
+	if err != nil {
+		log.Println("open channel error:", err)
+	}
 
-	// for msg := range incoming {
-	// 	log.Println("hello this is the message that i recieved")
-	// 	log.Println("This is the queue:", msg.Type)
-	// 	log.Println("And this is the body:", msg.Data)
-	// }
+	q, err := channel.DeclareQueue("newqueue", ctx)
+	if err != nil {
+		log.Println("declare queue error:", err)
+	}
+	q = &client.Queue{}
+	consumectx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	incoming, err := channel.Consume(q.Name, consumectx)
+	if err != nil {
+		log.Println("consume error:", err)
+	}
+
+	bytes, err := json.Marshal("this is the first message that goes through the broker")
+	if err != nil {
+		log.Println(err)
+	}
+	err = channel.Publish(protocol.Publish{
+		Queue: "newquue",
+		Body:  bytes,
+	})
+	if err != nil {
+		log.Println("publish error:", err)
+	}
+
+	for msg := range incoming {
+		log.Println("hello this is the message that i recieved")
+		log.Println("This is the queue:", msg.Queue)
+		log.Println("And this is the body:", string(msg.Body))
+	}
 
 	log.Println("Connection was opened")
 }

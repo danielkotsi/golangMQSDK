@@ -67,12 +67,11 @@ func (c *Connection) Handle(env protocol.Envelope) {
 	switch env.Type {
 	case protocol.ChannelOpenType:
 		c.ChannelOpen(env)
-		return
 	case protocol.ChannelCloseType:
 		c.ChannelClose(env)
-		return
+	default:
+		c.routeToChannel(env)
 	}
-	c.routeToChannel(env)
 }
 
 func (c *Connection) routeToChannel(env protocol.Envelope) {
@@ -80,10 +79,11 @@ func (c *Connection) routeToChannel(env protocol.Envelope) {
 	ch, ok := c.channels[env.ChannelID]
 	c.mu.Unlock()
 	if !ok {
-		c.WriteEnvelope(protocol.ErrorType, env.RequestID, protocol.Error{
+		c.WriteEnvelope(env.ChannelID, protocol.ErrorType, env.RequestID, protocol.Error{
 			Message: "channel with requested channelID not open for communication",
 		})
 	}
+	fmt.Println(c.channels)
 	ch.route(env)
 }
 
@@ -142,12 +142,13 @@ func (c *Connection) WriteMessage(data any) error {
 	return protocol.WriteMessage(c.w, data)
 }
 
-func (c *Connection) WriteEnvelope(envType protocol.Method, reqID uint16, msg any) error {
+func (c *Connection) WriteEnvelope(channelID uint16, envType protocol.Method, reqID uint16, msg any) error {
 	payload, err := json.Marshal(msg)
 	if err != nil {
 		return err
 	}
 	env := protocol.Envelope{
+		ChannelID: channelID,
 		RequestID: reqID,
 		Type:      envType,
 		Payload:   payload,
@@ -180,9 +181,14 @@ func (c *Connection) ChannelOpen(env protocol.Envelope) {
 	fmt.Println("request for open channel was made with this channelID: ", channelOpen.ID)
 	id := channelOpen.ID
 	c.mu.Lock()
-	c.channels[id] = &Channel{id: id}
+	c.channels[id] = &Channel{
+		id:        id,
+		conn:      c,
+		server:    c.server,
+		consumers: make(map[string]*Consumer),
+	}
 	c.mu.Unlock()
-	c.WriteEnvelope(protocol.ChannelOpenOKType, env.RequestID, &protocol.ChannelOpenOK{
+	c.WriteEnvelope(0, protocol.ChannelOpenOKType, env.RequestID, &protocol.ChannelOpenOK{
 		ID: id,
 	})
 }

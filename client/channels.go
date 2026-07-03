@@ -19,7 +19,7 @@ type ClientChannel struct {
 	mu      sync.Mutex
 	pending map[uint16]chan Response
 
-	Incoming chan Event
+	Incoming chan protocol.Deliver
 	client   *Client
 }
 
@@ -29,7 +29,7 @@ func NewClientChannel(id uint16, client *Client) *ClientChannel {
 		pending: make(map[uint16]chan Response),
 		client:  client,
 		//i will need to reconsider the buffer here
-		Incoming: make(chan Event, 100),
+		Incoming: make(chan protocol.Deliver, 100),
 	}
 }
 func (ch *ClientChannel) registerREQ(reqID uint16) chan Response {
@@ -48,8 +48,13 @@ func (ch *ClientChannel) unRegisterREQ(reqID uint16) {
 }
 
 func (ch *ClientChannel) resolve(reqID uint16, res Response) {
+	fmt.Println(reqID)
 	ch.mu.Lock()
 	respCH, ok := ch.pending[reqID]
+	if !ok {
+		fmt.Println("not okay man")
+		fmt.Println(ch.pending)
+	}
 	if ok {
 		delete(ch.pending, reqID)
 	}
@@ -68,10 +73,7 @@ func (ch *ClientChannel) route(env protocol.Envelope) error {
 		if err != nil {
 			return err
 		}
-		ch.Incoming <- Event{
-			Type: env.Type,
-			Data: delivery,
-		}
+		ch.Incoming <- delivery
 		return nil
 	case protocol.BasicConsumeOKType:
 		var consumeOK protocol.ConsumeOK
@@ -79,6 +81,7 @@ func (ch *ClientChannel) route(env protocol.Envelope) error {
 		if err != nil {
 			return err
 		}
+		fmt.Println("hey we got into the consume ok")
 		ch.resolve(env.RequestID, Response{
 			Data: consumeOK,
 		})
@@ -123,7 +126,7 @@ func (ch *ClientChannel) route(env protocol.Envelope) error {
 func (ch *ClientChannel) DeclareQueue(name string, ctx context.Context) (*Queue, error) {
 	reqID := ch.client.nextRequestID()
 	respCh := ch.registerREQ(reqID)
-	if err := ch.client.WriteEnvelope(ch.id, protocol.QueueDeclareType, reqID, protocol.QueueDeclare{
+	if err := ch.client.WriteChannelEnvelope(ch.id, protocol.QueueDeclareType, reqID, protocol.QueueDeclare{
 		Name: name,
 	}); err != nil {
 		return nil, err
@@ -143,11 +146,21 @@ func (ch *ClientChannel) DeclareQueue(name string, ctx context.Context) (*Queue,
 	}
 }
 
-func (ch *ClientChannel) Consume(queuename string, ctx context.Context) (chan Event, error) {
+func (ch *ClientChannel) Publish(event protocol.Publish) error {
+	reqID := ch.client.nextRequestID()
+
+	if err := ch.client.WriteChannelEnvelope(ch.id, protocol.BasicPublishType, reqID, event); err != nil {
+		return err
+	}
+	return nil
+}
+func (ch *ClientChannel) Consume(queuename string, ctx context.Context) (chan protocol.Deliver, error) {
 	reqID := ch.client.nextRequestID()
 	respCh := ch.registerREQ(reqID)
 
-	if err := ch.client.WriteEnvelope(ch.id, protocol.BasicConsumeType, reqID, protocol.Consume{
+	fmt.Println("this is the channel id in the cnsume:", ch.id)
+	fmt.Println("this is the request id in the cnsume:", reqID)
+	if err := ch.client.WriteChannelEnvelope(ch.id, protocol.BasicConsumeType, reqID, protocol.Consume{
 		Queue: queuename,
 	}); err != nil {
 		return nil, err

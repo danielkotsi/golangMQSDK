@@ -3,6 +3,7 @@ package broker
 import (
 	"GolangRabbitMQBroker/protocol"
 	"encoding/json"
+	"fmt"
 	"log"
 )
 
@@ -21,26 +22,30 @@ func (ch *Channel) route(env protocol.Envelope) {
 		if err != nil {
 			log.Println(err)
 		}
-		ch.HandlePublish(ch.conn, &event)
+		ch.HandlePublish(env.ChannelID, env.RequestID, ch.conn, &event)
 	case protocol.BasicConsumeType:
 		var event protocol.Consume
+		fmt.Println("we are here")
+		fmt.Println("this is the channelID:", env.ChannelID)
+		fmt.Println("this is the reqID:", env.RequestID)
 		err := json.Unmarshal(env.Payload, &event)
 		if err != nil {
-			ch.conn.WriteEnvelope(protocol.ErrorType, env.RequestID, protocol.Error{
+			ch.conn.WriteEnvelope(env.ChannelID, protocol.ErrorType, env.RequestID, protocol.Error{
 				Message: err.Error(),
 			})
 		}
-		ch.HandleConsume(ch.conn, &event)
+		ch.HandleConsume(env.ChannelID, env.RequestID, ch.conn, &event)
 	case protocol.BasicAckType:
 		var event protocol.Ack
 		err := json.Unmarshal(env.Payload, &event)
 		if err != nil {
-			ch.conn.WriteEnvelope(protocol.ErrorType, env.RequestID, protocol.Error{
+			ch.conn.WriteEnvelope(env.ChannelID, protocol.ErrorType, env.RequestID, protocol.Error{
 				Message: err.Error(),
 			})
 		}
 		ch.HandleAck(ch.conn, &event)
 	case protocol.QueueDeclareType:
+		fmt.Println("this is the channelID:", env.ChannelID)
 		var event protocol.QueueDeclare
 		err := json.Unmarshal(env.Payload, &event)
 		if err != nil {
@@ -51,7 +56,7 @@ func (ch *Channel) route(env protocol.Envelope) {
 		var event protocol.QueueBind
 		err := json.Unmarshal(env.Payload, &event)
 		if err != nil {
-			ch.conn.WriteEnvelope(protocol.ErrorType, env.RequestID, protocol.Error{
+			ch.conn.WriteEnvelope(env.ChannelID, protocol.ErrorType, env.RequestID, protocol.Error{
 				Message: err.Error(),
 			})
 		}
@@ -59,25 +64,25 @@ func (ch *Channel) route(env protocol.Envelope) {
 	}
 }
 
-func (ch *Channel) HandlePublish(conn *Connection, event *protocol.Publish) {
-	log.Println("hello this is the message that i recieved")
-	log.Println("This is the queue:", event.Queue)
-	log.Println("And this is the body:", event.Body)
-	conn.WriteEnvelope(protocol.BasicConsumeOKType, 0, protocol.Deliver{
-		ConsumerTag: "daniel",
-		Queue:       event.Queue,
-		Body:        event.Body,
+func (ch *Channel) HandlePublish(channelID uint16, reqID uint16, conn *Connection, event *protocol.Publish) {
+	conn.WriteEnvelope(channelID, protocol.BasicDeliverType, reqID, protocol.Deliver{
+		Queue: event.Queue,
+		Body:  event.Body,
 	})
 }
 
-func (ch *Channel) HandleConsume(conn *Connection, event *protocol.Consume) {
+func (ch *Channel) HandleConsume(channelID uint16, reqID uint16, conn *Connection, event *protocol.Consume) {
+	fmt.Println("hello we got into the handle consume")
+	conn.WriteEnvelope(channelID, protocol.BasicConsumeOKType, reqID, protocol.ConsumeOK{
+		ConsumerTag: "daniel",
+	})
 }
 
 func (ch *Channel) HandleAck(conn *Connection, event *protocol.Ack) {
 }
 
 func (ch *Channel) HandleQueueDeclare(conn *Connection, event *protocol.QueueDeclare) {
-	log.Println("hello")
+	log.Println("this is the queue declare request")
 }
 
 func (ch *Channel) HandleQueueBind(conn *Connection, event *protocol.QueueBind) {

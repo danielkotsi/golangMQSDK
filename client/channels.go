@@ -1,10 +1,10 @@
-package client
+package gomq
 
 import (
-	"GolangRabbitMQBroker/protocol"
 	"context"
 	"encoding/json"
 	"fmt"
+	"golangMQSDK/protocol"
 	"sync"
 )
 

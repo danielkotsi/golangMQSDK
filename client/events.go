@@ -1,6 +1,6 @@
-package client
+package gomq
 
-import "GolangRabbitMQBroker/protocol"
+import "golangMQSDK/protocol"
 
 type Event struct {
 	Type protocol.Method

@@ -1,16 +1,16 @@
 package main
 
 import (
-	"GolangRabbitMQBroker/client"
-	"GolangRabbitMQBroker/protocol"
 	"context"
 	"encoding/json"
+	gomq "golangMQSDK/client"
+	"golangMQSDK/protocol"
 	"log"
 	"time"
 )
 
 func main() {
-	cfg := client.Config{
+	cfg := gomq.Config{
 		ClientName:   "publisher",
 		Username:     "daniel",
 		Password:     "123456789",
@@ -19,7 +19,7 @@ func main() {
 		HeartbeatSec: 10,
 	}
 
-	c, err := client.Connect("localhost:5672", cfg)
+	c, err := gomq.Connect("localhost:5672", cfg)
 	if err != nil {
 		log.Println(err)
 		return

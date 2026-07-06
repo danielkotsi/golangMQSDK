@@ -1,11 +1,11 @@
-package client
+package gomq
 
 import (
-	"GolangRabbitMQBroker/protocol"
 	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
+	"golangMQSDK/protocol"
 	"log"
 	"net"
 	"sync"

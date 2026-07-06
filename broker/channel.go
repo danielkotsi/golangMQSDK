@@ -13,6 +13,12 @@ type Channel struct {
 	consumers map[string]*Consumer
 }
 
+func (ch *Channel) cleanup() {
+	for _, consumer := range ch.consumers {
+		consumer.queue.unregisterConsumer(consumer.tag)
+	}
+}
+
 func (ch *Channel) route(env protocol.Envelope) {
 	switch env.Type {
 	case protocol.BasicPublishType:

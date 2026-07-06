@@ -52,6 +52,7 @@ func main() {
 		log.Println("workerA, Received:")
 		log.Println("workerA, Tag:     ", msg.DeliveryTag)
 		log.Println("workerA,  Body:    ", string(msg.Body))
+		time.Sleep(5 * time.Second)
 
 		err = channel.Ack(msg.DeliveryTag)
 		if err != nil {
@@ -82,6 +83,7 @@ func workerB(c *client.Client) {
 		log.Println("workerB, Received:")
 		log.Println("workerB, Tag:     ", msg.DeliveryTag)
 		log.Println("workerB,  Body:    ", string(msg.Body))
+		time.Sleep(3 * time.Second)
 
 		err = channel.Ack(msg.DeliveryTag)
 		if err != nil {

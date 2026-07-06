@@ -76,6 +76,7 @@ func (c *Connection) send(data []byte) error {
 }
 
 func (c *Connection) writePump() {
+	defer c.shutdown()
 	for {
 		select {
 		case req := <-c.writeCh:
@@ -93,6 +94,14 @@ func (c *Connection) writePump() {
 			return
 		}
 	}
+}
+
+func (c *Connection) cleanup() {
+	c.mu.Lock()
+	for _, ch := range c.channels {
+		ch.cleanup()
+	}
+	c.mu.Unlock()
 }
 
 func (c *Connection) shutdown() {
@@ -253,6 +262,10 @@ func (c *Connection) ChannelOpen(env protocol.Envelope) {
 func (c *Connection) ChannelClose(env protocol.Envelope) {
 	id := env.ChannelID
 	c.mu.Lock()
+	ch, ok := c.channels[id]
 	delete(c.channels, id)
 	c.mu.Unlock()
+	if ok {
+		ch.cleanup()
+	}
 }

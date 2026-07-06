@@ -43,6 +43,26 @@ func (q *Queue) registerConsumer(c *Consumer) {
 	q.cond.Signal()
 }
 
+func (q *Queue) unregisterConsumer(tag string) {
+	q.mu.Lock()
+	c, ok := q.consumers[tag]
+	if !ok {
+		q.mu.Unlock()
+		return
+	}
+	delete(q.consumers, tag)
+
+	for _, msg := range c.pendingMessages {
+		q.messages = append([]Message{msg}, q.messages...)
+		delete(c.inflightTags, msg.DeliveryTag)
+		c.inflight--
+	}
+	c.pendingMessages = make(map[uint16]Message)
+
+	q.mu.Unlock()
+	q.cond.Signal()
+}
+
 func (q *Queue) selectConsumer() *Consumer {
 	for _, c := range q.consumers {
 		fmt.Println("this is the consumer id:", c.channel.id)
@@ -81,6 +101,7 @@ func (q *Queue) dispatchLoop() {
 		q.messages = q.messages[1:]
 		consumer.inflight++
 		consumer.inflightTags[msg.DeliveryTag] = struct{}{}
+		consumer.pendingMessages[msg.DeliveryTag] = msg
 
 		q.mu.Unlock()
 
@@ -96,7 +117,13 @@ func (q *Queue) dispatchLoop() {
 			},
 		)
 		if err != nil {
-			log.Println("deliver error:", err)
+			log.Println("deliver error, re-enqueueing:", err)
+			q.mu.Lock()
+			q.messages = append([]Message{msg}, q.messages...)
+			consumer.inflight--
+			delete(consumer.inflightTags, msg.DeliveryTag)
+			delete(consumer.pendingMessages, msg.DeliveryTag)
+			q.mu.Unlock()
 		}
 	}
 }

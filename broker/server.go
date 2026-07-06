@@ -52,6 +52,7 @@ func (s *Server) HandleConnection(c net.Conn) {
 	s.mu.Unlock()
 	defer func() {
 		conn.shutdown()
+		conn.cleanup()
 		s.mu.Lock()
 		delete(s.connections, conn)
 		s.mu.Unlock()

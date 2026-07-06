@@ -124,16 +124,21 @@ func (ch *ClientChannel) route(env protocol.Envelope) error {
 	return fmt.Errorf("Envelope Type does not match protocol")
 }
 
+// if no dead-letter-queue/dead-letter-routingkey is wanted put "" on these parameters
 // in this case i just cancel with the timeout
 // but server still creates the queue if responds delayed
 // needs fixing
-func (ch *ClientChannel) DeclareQueue(name string, ctx context.Context) (*Queue, error) {
+func (ch *ClientChannel) DeclareQueue(name string, ctx context.Context, dlxExchange, dlxRoutingKey string) (*Queue, error) {
 	reqID := ch.client.nextRequestID()
 	respCh := ch.registerREQ(reqID)
 
-	if err := ch.client.WriteChannelEnvelope(ch.id, protocol.QueueDeclareType, reqID, protocol.QueueDeclare{
-		Name: name,
-	}); err != nil {
+	qd := protocol.QueueDeclare{
+		Name:                 name,
+		DeadLetterExchange:   dlxExchange,
+		DeadLetterRoutingKey: dlxRoutingKey,
+	}
+
+	if err := ch.client.WriteChannelEnvelope(ch.id, protocol.QueueDeclareType, reqID, qd); err != nil {
 		return nil, err
 	}
 
@@ -207,6 +212,14 @@ func (ch *ClientChannel) Publish(event protocol.Publish) error {
 func (ch *ClientChannel) Ack(deliveryTag uint16) error {
 	return ch.client.WriteChannelEnvelope(ch.id, protocol.BasicAckType, 0, protocol.Ack{
 		DeliveryTag: deliveryTag,
+	})
+}
+
+func (ch *ClientChannel) Nack(deliveryTag uint16, requeue bool) error {
+	r := requeue
+	return ch.client.WriteChannelEnvelope(ch.id, protocol.BasicNackType, 0, protocol.Nack{
+		DeliveryTag: deliveryTag,
+		Requeue:     &r,
 	})
 }
 func (ch *ClientChannel) Consume(queuename string, ctx context.Context) (chan protocol.Deliver, error) {

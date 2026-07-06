@@ -11,6 +11,7 @@ const (
 	BasicPublishType Method = "basic.publish"
 	BasicConsumeType Method = "basic.consume"
 	BasicAckType     Method = "basic.ack"
+	BasicNackType    Method = "basic.nack"
 
 	//server
 	BasicDeliverType   Method = "basic.deliver"
@@ -79,6 +80,11 @@ type Ack struct {
 	DeliveryTag uint16 `json:"delivery_tag"`
 }
 
+type Nack struct {
+	DeliveryTag uint16 `json:"delivery_tag"`
+	Requeue     *bool  `json:"requeue,omitempty"`
+}
+
 type Deliver struct {
 	DeliveryTag uint16 `json:"delivery_tag"`
 	Body        []byte `json:"body"`
@@ -87,7 +93,9 @@ type Deliver struct {
 }
 
 type QueueDeclare struct {
-	Name string `json:"name"`
+	Name                string `json:"name"`
+	DeadLetterExchange  string `json:"dead_letter_exchange,omitempty"`
+	DeadLetterRoutingKey string `json:"dead_letter_routing_key,omitempty"`
 }
 
 type QueueDeclareOK struct {

@@ -41,13 +41,30 @@ func main() {
 		return
 	}
 
+	_, err = channel.DeclareExchange("dlx", ctx)
+	if err != nil {
+		log.Println("declare exchange error:", err)
+		return
+	}
+
+	_, err = channel.DeclareQueue("dlq", ctx, "", "")
+	if err != nil {
+		log.Println("declare queue error:", err)
+		return
+	}
+
+	err = channel.BindQueue("dlq", "dlx", "dead_emails", ctx)
+	if err != nil {
+		log.Println("bind queue error:", err)
+		return
+	}
 	_, err = channel.DeclareExchange("emails", ctx)
 	if err != nil {
 		log.Println("declare exchange error:", err)
 		return
 	}
 
-	_, err = channel.DeclareQueue("email_queue", ctx)
+	_, err = channel.DeclareQueue("email_queue", ctx, "dlx", "dead_emails")
 	if err != nil {
 		log.Println("declare queue error:", err)
 		return

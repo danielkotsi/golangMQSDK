@@ -16,6 +16,9 @@ type Queue struct {
 
 	cond    *sync.Cond
 	nextTag uint16
+
+	dlx          string
+	dlxRoutingKey string
 }
 
 type Message struct {
@@ -25,11 +28,13 @@ type Message struct {
 	RoutingKey  string
 }
 
-func NewQueue(name string) *Queue {
+func NewQueue(name, dlx, dlxRoutingKey string) *Queue {
 	q := &Queue{
-		name:      name,
-		consumers: make(map[string]*Consumer),
-		nextTag:   1,
+		name:         name,
+		consumers:    make(map[string]*Consumer),
+		nextTag:      1,
+		dlx:          dlx,
+		dlxRoutingKey: dlxRoutingKey,
 	}
 	q.cond = sync.NewCond(&q.mu)
 	go q.dispatchLoop()

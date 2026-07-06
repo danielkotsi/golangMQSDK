@@ -18,10 +18,10 @@ func NewBroker() *Broker {
 	}
 }
 
-func (b *Broker) DeclareQueue(name string) {
+func (b *Broker) DeclareQueue(name, dlx, dlxRoutingKey string) {
 	b.mu.Lock()
 	if _, ok := b.queues[name]; !ok {
-		b.queues[name] = NewQueue(name)
+		b.queues[name] = NewQueue(name, dlx, dlxRoutingKey)
 	}
 	b.mu.Unlock()
 }

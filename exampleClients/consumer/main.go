@@ -31,6 +31,7 @@ func main() {
 	go c.ReadLoop()
 
 	go workerB(c)
+	go workerC(c)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
@@ -49,11 +50,24 @@ func main() {
 	}
 
 	for msg := range incoming {
+		if msg.DeliveryTag%3 == 0 {
+			err = channel.Nack(msg.DeliveryTag, false)
+			if err != nil {
+				log.Println("ack error:", err)
+			}
+			continue
+		}
 		log.Println("workerA, Received:")
 		log.Println("workerA, Tag:     ", msg.DeliveryTag)
 		log.Println("workerA,  Body:    ", string(msg.Body))
-		time.Sleep(5 * time.Second)
 
+		if msg.DeliveryTag%3 == 0 {
+			err = channel.Nack(msg.DeliveryTag, false)
+			if err != nil {
+				log.Println("ack error:", err)
+			}
+			continue
+		}
 		err = channel.Ack(msg.DeliveryTag)
 		if err != nil {
 			log.Println("ack error:", err)
@@ -80,10 +94,46 @@ func workerB(c *client.Client) {
 	}
 
 	for msg := range incoming {
+		if msg.DeliveryTag%3 == 0 {
+			err = channel.Nack(msg.DeliveryTag, false)
+			if err != nil {
+				log.Println("ack error:", err)
+			}
+			continue
+		}
 		log.Println("workerB, Received:")
 		log.Println("workerB, Tag:     ", msg.DeliveryTag)
 		log.Println("workerB,  Body:    ", string(msg.Body))
-		time.Sleep(3 * time.Second)
+
+		err = channel.Ack(msg.DeliveryTag)
+		if err != nil {
+			log.Println("ack error:", err)
+		}
+	}
+}
+
+func workerC(c *client.Client) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	channel, err := c.OpenChannel(ctx)
+	if err != nil {
+		log.Println("open channel error:", err)
+		return
+	}
+
+	log.Println("Waiting for messages on dlq...")
+
+	incoming, err := channel.Consume("dlq", ctx)
+	if err != nil {
+		log.Println("consume error:", err)
+		return
+	}
+
+	for msg := range incoming {
+		log.Println("workerC, Received:")
+		log.Println("workerC, Tag:     ", msg.DeliveryTag)
+		log.Println("workerC,  Body:    ", string(msg.Body))
 
 		err = channel.Ack(msg.DeliveryTag)
 		if err != nil {

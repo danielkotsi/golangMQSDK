@@ -27,6 +27,8 @@ func (ch *Channel) route(env protocol.Envelope) {
 		ch.HandleConsume(env)
 	case protocol.BasicAckType:
 		ch.HandleAck(env)
+	case protocol.BasicNackType:
+		ch.HandleNack(env)
 	case protocol.QueueDeclareType:
 		ch.HandleQueueDeclare(env)
 	case protocol.ExchangeDeclareType:
@@ -88,6 +90,45 @@ func (ch *Channel) HandleAck(env protocol.Envelope) {
 	}
 }
 
+func (ch *Channel) HandleNack(env protocol.Envelope) {
+	var event protocol.Nack
+	err := json.Unmarshal(env.Payload, &event)
+	if err != nil {
+		ch.conn.WriteEnvelope(env.ChannelID, protocol.ErrorType, env.RequestID, protocol.Error{
+			Message: err.Error(),
+		})
+		return
+	}
+
+	requeue := true
+	if event.Requeue != nil {
+		requeue = *event.Requeue
+	}
+
+	for _, consumer := range ch.consumers {
+		if msg, ok := consumer.pendingMessages[event.DeliveryTag]; ok {
+			delete(consumer.inflightTags, event.DeliveryTag)
+			delete(consumer.pendingMessages, event.DeliveryTag)
+			consumer.inflight--
+
+			if requeue {
+				consumer.queue.mu.Lock()
+				consumer.queue.messages = append([]Message{msg}, consumer.queue.messages...)
+				consumer.queue.mu.Unlock()
+			} else if consumer.queue.dlx != "" {
+				routingKey := consumer.queue.dlxRoutingKey
+				if routingKey == "" {
+					routingKey = msg.RoutingKey
+				}
+				ch.broker.Publish(consumer.queue.dlx, routingKey, msg.Body)
+			}
+
+			consumer.queue.cond.Signal()
+			return
+		}
+	}
+}
+
 func (ch *Channel) HandleExchangeDeclare(env protocol.Envelope) {
 	var event protocol.ExchangeDeclare
 	err := json.Unmarshal(env.Payload, &event)
@@ -108,7 +149,7 @@ func (ch *Channel) HandleQueueDeclare(env protocol.Envelope) {
 	if err != nil {
 		log.Println(err)
 	}
-	ch.broker.DeclareQueue(event.Name)
+	ch.broker.DeclareQueue(event.Name, event.DeadLetterExchange, event.DeadLetterRoutingKey)
 
 	ch.conn.WriteEnvelope(env.ChannelID, protocol.QueueDeclareOKType, env.RequestID, protocol.QueueDeclareOK{
 		Name: event.Name,

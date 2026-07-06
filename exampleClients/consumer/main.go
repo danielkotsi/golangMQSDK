@@ -17,18 +17,11 @@ func main() {
 		HeartbeatSec: 10,
 	}
 
-	c, err := client.Dial("localhost:5672", cfg)
+	c, err := client.Connect("localhost:5672", cfg)
 	if err != nil {
 		log.Println(err)
 		return
 	}
-
-	err = c.Handshake()
-	if err != nil {
-		log.Println(err)
-		return
-	}
-	go c.ReadLoop()
 
 	go workerB(c)
 	go workerC(c)

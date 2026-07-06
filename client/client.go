@@ -47,7 +47,20 @@ type Client struct {
 	closed    chan struct{}
 }
 
-func Dial(address string, cfg Config) (*Client, error) {
+func Connect(address string, cfg Config) (*Client, error) {
+	c, err := dial(address, cfg)
+	if err != nil {
+		return &Client{}, err
+	}
+	err = c.handshake()
+	if err != nil {
+		return &Client{}, err
+	}
+	go c.readLoop()
+	return c, nil
+}
+
+func dial(address string, cfg Config) (*Client, error) {
 	conn, err := net.Dial("tcp", address)
 	if err != nil {
 		return nil, err
@@ -126,14 +139,14 @@ func (c *Client) nextChannelid() uint16 {
 func (c *Client) OpenChannel(ctx context.Context) (ch *ClientChannel, err error) {
 	id := c.nextChannelid()
 	reqID := c.nextRequestID()
-	clientCh := NewClientChannel(id, c)
+	clientCh := newClientChannel(id, c)
 	c.mu.Lock()
 	c.channels[id] = clientCh
 	c.mu.Unlock()
 
 	respCh := clientCh.registerREQ(reqID)
 
-	if err := c.WriteEnvelope(protocol.ChannelOpenType, reqID, protocol.ChannelOpen{
+	if err := c.writeEnvelope(protocol.ChannelOpenType, reqID, protocol.ChannelOpen{
 		ID: id,
 	}); err != nil {
 		delete(c.channels, id)
@@ -153,7 +166,7 @@ func (c *Client) OpenChannel(ctx context.Context) (ch *ClientChannel, err error)
 	case <-ctx.Done():
 		delete(c.channels, id)
 		ch.unRegisterREQ(reqID)
-		c.WriteEnvelope(protocol.ChannelCloseType, c.nextRequestID(), protocol.ChannelClose{
+		c.writeEnvelope(protocol.ChannelCloseType, c.nextRequestID(), protocol.ChannelClose{
 			ID: id,
 		})
 		return nil, ctx.Err()
@@ -161,57 +174,57 @@ func (c *Client) OpenChannel(ctx context.Context) (ch *ClientChannel, err error)
 }
 
 // Follow Protocol Rules to do Handshake or Return an Error
-func (c *Client) Handshake() error {
+func (c *Client) handshake() error {
 	//send header
-	err := c.WriteProtocolHeader()
+	err := c.writeProtocolHeader()
 	if err != nil {
 		return err
 	}
 	//read connection.start
 	var start protocol.ConnectionStart
-	err = c.ReadMessage(&start)
+	err = c.readMessage(&start)
 	if err != nil {
 		return err
 	}
 	//Send Connection.start_ok
 	startOK := protocol.NewConnectionStartOK(c.clientName, c.username, c.password)
-	err = c.WriteMessage(startOK)
+	err = c.writeMessage(startOK)
 	if err != nil {
 		return err
 	}
 	//Read Connection.tune
 	var connectionTune protocol.ConnectionTune
-	err = c.ReadMessage(&connectionTune)
+	err = c.readMessage(&connectionTune)
 	if err != nil {
 		return err
 	}
 	//Send Connection.tune_ok
 	connectionTuneOK := protocol.NewConnectionTuneOK(c.channelMax, c.framesMax, c.heartbeatSec)
-	err = c.WriteMessage(connectionTuneOK)
+	err = c.writeMessage(connectionTuneOK)
 	if err != nil {
 		return err
 	}
 	//Send Connection.Open
 	connectionOpen := protocol.NewConnectionOpen()
-	err = c.WriteMessage(connectionOpen)
+	err = c.writeMessage(connectionOpen)
 	if err != nil {
 		return err
 	}
 	//Read Connectin.Open_ok
 	var connectionOpenOK protocol.ConnectionOpenOK
-	err = c.ReadMessage(&connectionOpenOK)
+	err = c.readMessage(&connectionOpenOK)
 
 	return nil
 }
 
-func (c *Client) WriteMessage(data any) error {
+func (c *Client) writeMessage(data any) error {
 	bytes, err := json.Marshal(data)
 	if err != nil {
 		return err
 	}
 	return c.send(append(bytes, '\n'))
 }
-func (c *Client) WriteChannelEnvelope(channelID uint16, envType protocol.Method, reqID uint16, msg any) error {
+func (c *Client) writeChannelEnvelope(channelID uint16, envType protocol.Method, reqID uint16, msg any) error {
 	payload, err := json.Marshal(msg)
 	if err != nil {
 		return err
@@ -228,7 +241,7 @@ func (c *Client) WriteChannelEnvelope(channelID uint16, envType protocol.Method,
 	}
 	return c.send(append(bytes, '\n'))
 }
-func (c *Client) WriteEnvelope(envType protocol.Method, reqID uint16, msg any) error {
+func (c *Client) writeEnvelope(envType protocol.Method, reqID uint16, msg any) error {
 	payload, err := json.Marshal(msg)
 	if err != nil {
 		return err
@@ -245,23 +258,23 @@ func (c *Client) WriteEnvelope(envType protocol.Method, reqID uint16, msg any) e
 	return c.send(append(bytes, '\n'))
 }
 
-func (c *Client) WriteProtocolHeader() error {
+func (c *Client) writeProtocolHeader() error {
 	return c.send([]byte(protocol.ProtocolHeader + "\n"))
 }
 
-func (c *Client) ReadMessage(pointer any) error {
+func (c *Client) readMessage(pointer any) error {
 	return protocol.ReadMessage(c.r, pointer)
 }
 
-func (c *Client) ReadEnvelope(env *protocol.Envelope) error {
+func (c *Client) weadEnvelope(env *protocol.Envelope) error {
 	return protocol.ReadEnvelope(c.r, env)
 }
 
-func (c *Client) ReadLoop() {
+func (c *Client) readLoop() {
 	defer c.shutdown()
 	for {
 		var env protocol.Envelope
-		if err := c.ReadEnvelope(&env); err != nil {
+		if err := c.weadEnvelope(&env); err != nil {
 			log.Println(err)
 			close(c.Incoming)
 			return
@@ -293,7 +306,7 @@ func (c *Client) handleChannelOpenOK(env protocol.Envelope) {
 		log.Println("did not find channel")
 		return
 	}
-	ch.resolve(env.RequestID, Response{
+	ch.resolve(env.RequestID, response{
 		Data: channelOpenOK,
 	})
 }

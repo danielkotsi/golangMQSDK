@@ -8,7 +8,7 @@ import (
 	"sync"
 )
 
-type Response struct {
+type response struct {
 	Data any
 	Err  error
 }
@@ -17,23 +17,23 @@ type ClientChannel struct {
 	id uint16
 
 	mu      sync.Mutex
-	pending map[uint16]chan Response
+	pending map[uint16]chan response
 
 	Incoming chan protocol.Deliver
 	client   *Client
 }
 
-func NewClientChannel(id uint16, client *Client) *ClientChannel {
+func newClientChannel(id uint16, client *Client) *ClientChannel {
 	return &ClientChannel{
 		id:      id,
-		pending: make(map[uint16]chan Response),
+		pending: make(map[uint16]chan response),
 		client:  client,
 		//i will need to reconsider the buffer here
 		Incoming: make(chan protocol.Deliver, 100),
 	}
 }
-func (ch *ClientChannel) registerREQ(reqID uint16) chan Response {
-	respCH := make(chan Response, 1)
+func (ch *ClientChannel) registerREQ(reqID uint16) chan response {
+	respCH := make(chan response, 1)
 	ch.mu.Lock()
 	ch.pending[reqID] = respCH
 	ch.mu.Unlock()
@@ -47,7 +47,7 @@ func (ch *ClientChannel) unRegisterREQ(reqID uint16) {
 	ch.mu.Unlock()
 }
 
-func (ch *ClientChannel) resolve(reqID uint16, res Response) {
+func (ch *ClientChannel) resolve(reqID uint16, res response) {
 	ch.mu.Lock()
 	respCH, ok := ch.pending[reqID]
 	if ok {
@@ -76,7 +76,7 @@ func (ch *ClientChannel) route(env protocol.Envelope) error {
 		if err != nil {
 			return err
 		}
-		ch.resolve(env.RequestID, Response{
+		ch.resolve(env.RequestID, response{
 			Data: consumeOK,
 		})
 		return nil
@@ -86,7 +86,7 @@ func (ch *ClientChannel) route(env protocol.Envelope) error {
 		if err != nil {
 			return err
 		}
-		ch.resolve(env.RequestID, Response{
+		ch.resolve(env.RequestID, response{
 			Data: declareOK,
 		})
 		return nil
@@ -96,7 +96,7 @@ func (ch *ClientChannel) route(env protocol.Envelope) error {
 		if err != nil {
 			return err
 		}
-		ch.resolve(env.RequestID, Response{
+		ch.resolve(env.RequestID, response{
 			Data: exchangeOK,
 		})
 		return nil
@@ -106,7 +106,7 @@ func (ch *ClientChannel) route(env protocol.Envelope) error {
 		if err != nil {
 			return err
 		}
-		ch.resolve(env.RequestID, Response{
+		ch.resolve(env.RequestID, response{
 			Data: bindOK,
 		})
 		return nil
@@ -116,7 +116,7 @@ func (ch *ClientChannel) route(env protocol.Envelope) error {
 		if err != nil {
 			return err
 		}
-		ch.resolve(env.RequestID, Response{
+		ch.resolve(env.RequestID, response{
 			Err: fmt.Errorf("code:%s Message:%s", brokerError.Code, brokerError.Message),
 		})
 		return nil
@@ -138,7 +138,7 @@ func (ch *ClientChannel) DeclareQueue(name string, ctx context.Context, dlxExcha
 		DeadLetterRoutingKey: dlxRoutingKey,
 	}
 
-	if err := ch.client.WriteChannelEnvelope(ch.id, protocol.QueueDeclareType, reqID, qd); err != nil {
+	if err := ch.client.writeChannelEnvelope(ch.id, protocol.QueueDeclareType, reqID, qd); err != nil {
 		return nil, err
 	}
 
@@ -159,7 +159,7 @@ func (ch *ClientChannel) DeclareExchange(name string, ctx context.Context) (exch
 	reqID := ch.client.nextRequestID()
 	respCh := ch.registerREQ(reqID)
 
-	if err := ch.client.WriteChannelEnvelope(ch.id, protocol.ExchangeDeclareType, reqID, protocol.ExchangeDeclare{
+	if err := ch.client.writeChannelEnvelope(ch.id, protocol.ExchangeDeclareType, reqID, protocol.ExchangeDeclare{
 		Name: name,
 	}); err != nil {
 		return "", err
@@ -180,7 +180,7 @@ func (ch *ClientChannel) BindQueue(queue, exchange, routingKey string, ctx conte
 	reqID := ch.client.nextRequestID()
 	respCh := ch.registerREQ(reqID)
 
-	if err := ch.client.WriteChannelEnvelope(ch.id, protocol.QueueBindType, reqID, protocol.QueueBind{
+	if err := ch.client.writeChannelEnvelope(ch.id, protocol.QueueBindType, reqID, protocol.QueueBind{
 		Queue:      queue,
 		Exchange:   exchange,
 		RoutingKey: routingKey,
@@ -203,21 +203,21 @@ func (ch *ClientChannel) BindQueue(queue, exchange, routingKey string, ctx conte
 func (ch *ClientChannel) Publish(event protocol.Publish) error {
 	reqID := ch.client.nextRequestID()
 
-	if err := ch.client.WriteChannelEnvelope(ch.id, protocol.BasicPublishType, reqID, event); err != nil {
+	if err := ch.client.writeChannelEnvelope(ch.id, protocol.BasicPublishType, reqID, event); err != nil {
 		return err
 	}
 	return nil
 }
 
 func (ch *ClientChannel) Ack(deliveryTag uint16) error {
-	return ch.client.WriteChannelEnvelope(ch.id, protocol.BasicAckType, 0, protocol.Ack{
+	return ch.client.writeChannelEnvelope(ch.id, protocol.BasicAckType, 0, protocol.Ack{
 		DeliveryTag: deliveryTag,
 	})
 }
 
 func (ch *ClientChannel) Nack(deliveryTag uint16, requeue bool) error {
 	r := requeue
-	return ch.client.WriteChannelEnvelope(ch.id, protocol.BasicNackType, 0, protocol.Nack{
+	return ch.client.writeChannelEnvelope(ch.id, protocol.BasicNackType, 0, protocol.Nack{
 		DeliveryTag: deliveryTag,
 		Requeue:     &r,
 	})
@@ -226,7 +226,7 @@ func (ch *ClientChannel) Consume(queuename string, ctx context.Context) (chan pr
 	reqID := ch.client.nextRequestID()
 	respCh := ch.registerREQ(reqID)
 
-	if err := ch.client.WriteChannelEnvelope(ch.id, protocol.BasicConsumeType, reqID, protocol.Consume{
+	if err := ch.client.writeChannelEnvelope(ch.id, protocol.BasicConsumeType, reqID, protocol.Consume{
 		Queue: queuename,
 	}); err != nil {
 		return nil, err

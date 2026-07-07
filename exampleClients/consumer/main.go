@@ -2,9 +2,10 @@ package main
 
 import (
 	"context"
-	"golangMQSDK/client"
 	"log"
 	"time"
+
+	gomq "github.com/danielkotsi/golangMQSDK/client"
 )
 
 func main() {

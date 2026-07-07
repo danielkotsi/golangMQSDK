@@ -3,10 +3,11 @@ package main
 import (
 	"context"
 	"encoding/json"
-	gomq "golangMQSDK/client"
-	"golangMQSDK/protocol"
 	"log"
 	"time"
+
+	gomq "github.com/danielkotsi/golangMQSDK/client"
+	"github.com/danielkotsi/golangMQSDK/protocol"
 )
 
 func main() {

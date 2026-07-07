@@ -4,8 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"golangMQSDK/protocol"
 	"sync"
+
+	"github.com/danielkotsi/golangMQSDK/protocol"
 )
 
 type response struct {

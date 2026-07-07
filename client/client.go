@@ -5,7 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"golangMQSDK/protocol"
+	"github.com/danielkotsi/golangMQSDK/protocol"
 	"log"
 	"net"
 	"sync"

@@ -1,6 +1,6 @@
 package gomq
 
-import "golangMQSDK/protocol"
+import "github.com/danielkotsi/golangMQSDK/protocol"
 
 type Event struct {
 	Type protocol.Method

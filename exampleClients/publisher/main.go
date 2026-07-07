@@ -6,7 +6,7 @@ import (
 	"log"
 	"time"
 
-	gomq "github.com/danielkotsi/golangMQSDK/client"
+	gomq "github.com/danielkotsi/golangMQSDK/gomqSDK"
 	"github.com/danielkotsi/golangMQSDK/protocol"
 )
 

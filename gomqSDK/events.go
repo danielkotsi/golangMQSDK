@@ -1,4 +1,4 @@
-package gomq
+package gomqSDK
 
 import "github.com/danielkotsi/golangMQSDK/protocol"
 

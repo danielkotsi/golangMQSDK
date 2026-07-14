@@ -236,10 +236,15 @@ go run exampleClients/consumer/main.go
 # Terminal 1 — start the broker
 podman run -it -p 5672:5672 danielkotsi/golangmq:latest
 
-# Terminal 2 — start the consumer
+
+# Terminal 2 — publish messages 
+go run exampleClients/publisher/main.go
+
+
+# Terminal 3 — start the consumer
 go run exampleClients/consumer/main.go
 
-# Terminal 3 — publish messages (run multiple times)
+# Terminal 2 — publish messages (multiple times)
 go run exampleClients/publisher/main.go
 ```
 

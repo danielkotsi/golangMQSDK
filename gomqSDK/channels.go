@@ -17,8 +17,9 @@ type response struct {
 type ClientChannel struct {
 	id uint16
 
-	mu      sync.Mutex
-	pending map[uint16]chan response
+	mu        sync.Mutex
+	pending   map[uint16]chan response
+	closeOnce sync.Once
 
 	Incoming chan protocol.Deliver
 	client   *Client
@@ -58,6 +59,45 @@ func (ch *ClientChannel) resolve(reqID uint16, res response) {
 
 	if ok {
 		respCH <- res
+	}
+}
+
+// closeWithError signals every pending request with err and closes the
+// channel's Incoming delivery channel. It is idempotent and safe to call
+// concurrently. It is invoked by the owning client when it is closed.
+func (ch *ClientChannel) closeWithError(err error) {
+	ch.mu.Lock()
+	for reqID, respCH := range ch.pending {
+		delete(ch.pending, reqID)
+		respCH <- response{Err: err}
+	}
+	ch.mu.Unlock()
+
+	ch.closeOnce.Do(func() {
+		close(ch.Incoming)
+	})
+}
+
+// Close closes the channel on the broker and cleans up local state. The caller
+// is unblocked once the broker acknowledges with channel.close-ok or ctx
+// expires. After Close the channel must not be used any further.
+func (ch *ClientChannel) Close(ctx context.Context) error {
+	reqID := ch.client.nextRequestID()
+	respCh := ch.registerREQ(reqID)
+
+	if err := ch.client.writeChannelEnvelope(ch.id, protocol.ChannelCloseType, reqID, protocol.ChannelClose{
+		ID: ch.id,
+	}); err != nil {
+		ch.unRegisterREQ(reqID)
+		return err
+	}
+
+	select {
+	case res := <-respCh:
+		return res.Err
+	case <-ctx.Done():
+		ch.unRegisterREQ(reqID)
+		return ctx.Err()
 	}
 }
 

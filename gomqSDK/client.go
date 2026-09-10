@@ -42,9 +42,50 @@ type Client struct {
 	heartbeatSec int
 	Incoming     chan Event
 
-	writeCh   chan writeRequest
-	closeOnce sync.Once
-	closed    chan struct{}
+	writeCh      chan writeRequest
+	closeOnce    sync.Once
+	closed       chan struct{}
+	incomingOnce sync.Once
+}
+
+// closeIncoming closes the client-wide Incoming channel exactly once.
+func (c *Client) closeIncoming() {
+	c.incomingOnce.Do(func() {
+		close(c.Incoming)
+	})
+}
+
+// Close terminates the connection and cleans up all local state. It is
+// idempotent and safe to call multiple times or concurrently.
+//
+// It resolves every pending request so callers blocked in OpenChannel,
+// DeclareQueue, DeclareExchange, BindQueue or Consume return an error instead
+// of hanging, and closes each channel's Incoming delivery channel.
+func (c *Client) Close() error {
+	c.shutdown()
+
+	c.mu.Lock()
+	channels := make([]*ClientChannel, 0, len(c.channels))
+	for _, ch := range c.channels {
+		channels = append(channels, ch)
+	}
+	c.channels = make(map[uint16]*ClientChannel)
+	c.mu.Unlock()
+
+	for _, ch := range channels {
+		ch.closeWithError(fmt.Errorf("connection closed"))
+	}
+
+	c.closeIncoming()
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.conn != nil {
+		err := c.conn.Close()
+		c.conn = nil
+		return err
+	}
+	return nil
 }
 
 func Connect(address string, cfg Config) (*Client, error) {
@@ -88,7 +129,12 @@ func (c *Client) send(data []byte) error {
 	req := writeRequest{data: data, err: make(chan error, 1)}
 	select {
 	case c.writeCh <- req:
-		return <-req.err
+	case <-c.closed:
+		return fmt.Errorf("connection closed")
+	}
+	select {
+	case err := <-req.err:
+		return err
 	case <-c.closed:
 		return fmt.Errorf("connection closed")
 	}
@@ -276,7 +322,7 @@ func (c *Client) readLoop() {
 		var env protocol.Envelope
 		if err := c.weadEnvelope(&env); err != nil {
 			log.Println(err)
-			close(c.Incoming)
+			c.closeIncoming()
 			return
 		}
 		switch env.Type {
@@ -285,7 +331,9 @@ func (c *Client) readLoop() {
 		case protocol.ChannelCloseOKType:
 			c.handleChannelCloseOK(env)
 		default:
+			c.mu.Lock()
 			ch, ok := c.channels[env.ChannelID]
+			c.mu.Unlock()
 			if !ok {
 				return
 			}
@@ -300,7 +348,9 @@ func (c *Client) handleChannelOpenOK(env protocol.Envelope) {
 	if err != nil {
 		log.Println("unable to unmarshall server response")
 	}
+	c.mu.Lock()
 	ch, ok := c.channels[channelOpenOK.ID]
+	c.mu.Unlock()
 	if !ok {
 		log.Println("this is the channelID:", env.ChannelID)
 		log.Println("did not find channel")
@@ -312,4 +362,23 @@ func (c *Client) handleChannelOpenOK(env protocol.Envelope) {
 }
 
 func (c *Client) handleChannelCloseOK(env protocol.Envelope) {
+	var closeOK protocol.ChannelCloseOK
+	if err := json.Unmarshal(env.Payload, &closeOK); err != nil {
+		log.Println("unable to unmarshall server response")
+		return
+	}
+
+	c.mu.Lock()
+	ch, ok := c.channels[closeOK.ID]
+	if ok {
+		delete(c.channels, closeOK.ID)
+	}
+	c.mu.Unlock()
+	if !ok {
+		log.Println("did not find channel to close:", closeOK.ID)
+		return
+	}
+
+	ch.resolve(env.RequestID, response{})
+	ch.closeWithError(fmt.Errorf("channel closed"))
 }

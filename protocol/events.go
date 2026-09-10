@@ -61,6 +61,10 @@ type ChannelOpenOK struct {
 	ID uint16 `json:"id"`
 }
 
+type ChannelCloseOK struct {
+	ID uint16 `json:"id"`
+}
+
 type Publish struct {
 	Exchange   string `json:"exchange"`
 	RoutingKey string `json:"routing_key"`
@@ -93,8 +97,8 @@ type Deliver struct {
 }
 
 type QueueDeclare struct {
-	Name                string `json:"name"`
-	DeadLetterExchange  string `json:"dead_letter_exchange,omitempty"`
+	Name                 string `json:"name"`
+	DeadLetterExchange   string `json:"dead_letter_exchange,omitempty"`
 	DeadLetterRoutingKey string `json:"dead_letter_routing_key,omitempty"`
 }
 

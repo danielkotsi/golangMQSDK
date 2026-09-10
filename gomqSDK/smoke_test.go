@@ -139,6 +139,30 @@ func TestClientCloseIdempotentAndPendingDrain(t *testing.T) {
 	}
 }
 
+func TestClientConcurrentClose(t *testing.T) {
+	fb := newFakeBroker(t)
+	defer fb.close()
+
+	c := connectTestClient(t, fb)
+
+	var wg sync.WaitGroup
+	errs := make([]error, 2)
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			errs[i] = c.Close()
+		}(i)
+	}
+	wg.Wait()
+
+	for i, err := range errs {
+		if err != nil {
+			t.Fatalf("concurrent Close #%d: %v", i, err)
+		}
+	}
+}
+
 func TestClientChannelClose(t *testing.T) {
 	fb := newFakeBroker(t)
 	defer fb.close()
@@ -157,25 +181,38 @@ func TestClientChannelClose(t *testing.T) {
 		t.Fatal("channel not registered")
 	}
 
-	// Broker acknowledges channel.close once it receives it. Drain the
-	// earlier channel.open envelope first.
+	// The channel.open envelope is already in the broker buffer (OpenChannel
+	// completed), so drain it before watching for channel.close.
+	if _, err := fb.r.ReadBytes('\n'); err != nil {
+		t.Fatalf("drain channel.open: %v", err)
+	}
+
+	// Broker acknowledges channel.close once it receives it. A read deadline
+	// guarantees the goroutine cannot block forever if the connection is torn
+	// down before the envelope arrives.
+	ackDone := make(chan struct{})
 	go func() {
-		if _, err := fb.r.ReadBytes('\n'); err != nil {
-			panic(err)
-		}
+		defer close(ackDone)
+		fb.conn.SetReadDeadline(time.Now().Add(5 * time.Second))
 		line, err := fb.r.ReadBytes('\n')
 		if err != nil {
-			panic(err)
+			return
 		}
 		var env protocol.Envelope
 		if err := json.Unmarshal(line, &env); err != nil {
-			panic(err)
+			return
 		}
 		fb.send(prepareEnvelope(t, ch.id, env.RequestID, protocol.ChannelCloseOKType, protocol.ChannelCloseOK{ID: 1}))
 	}()
 
 	if err := ch.Close(ctx); err != nil {
 		t.Fatalf("ch.Close: %v", err)
+	}
+
+	select {
+	case <-ackDone:
+	case <-time.After(3 * time.Second):
+		t.Fatal("broker ack goroutine did not finish")
 	}
 
 	c.mu.Lock()

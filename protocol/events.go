@@ -91,6 +91,7 @@ type Nack struct {
 
 type Deliver struct {
 	DeliveryTag uint16 `json:"delivery_tag"`
+	ConsumerTag string `json:"consumer_tag,omitempty"`
 	Body        []byte `json:"body"`
 	Exchange    string `json:"exchange"`
 	RoutingKey  string `json:"routing_key"`

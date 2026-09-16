@@ -14,6 +14,14 @@ type response struct {
 	Err  error
 }
 
+// consumerEntry ties a per-consumer delivery channel to its close guard so the
+// channel can be closed exactly once even when closeWithError runs concurrently
+// on multiple goroutines.
+type consumerEntry struct {
+	deliveries chan protocol.Deliver
+	closeOnce  sync.Once
+}
+
 type ClientChannel struct {
 	id uint16
 
@@ -21,8 +29,10 @@ type ClientChannel struct {
 	pending   map[uint16]chan response
 	closeOnce sync.Once
 
-	Incoming chan protocol.Deliver
-	client   *Client
+	Incoming    chan protocol.Deliver     // legacy shared sink (fallback)
+	consumers   map[string]*consumerEntry // broker-echoed tag -> per-consumer chan
+	consumerSeq uint16                    // for client-authoritative tags
+	client      *Client
 }
 
 func newClientChannel(id uint16, client *Client) *ClientChannel {
@@ -31,7 +41,8 @@ func newClientChannel(id uint16, client *Client) *ClientChannel {
 		pending: make(map[uint16]chan response),
 		client:  client,
 		//i will need to reconsider the buffer here
-		Incoming: make(chan protocol.Deliver, 100),
+		Incoming:  make(chan protocol.Deliver, 100),
+		consumers: make(map[string]*consumerEntry),
 	}
 }
 func (ch *ClientChannel) registerREQ(reqID uint16) chan response {
@@ -63,15 +74,28 @@ func (ch *ClientChannel) resolve(reqID uint16, res response) {
 }
 
 // closeWithError signals every pending request with err and closes the
-// channel's Incoming delivery channel. It is idempotent and safe to call
-// concurrently. It is invoked by the owning client when it is closed.
+// channel's Incoming delivery channel and every per-consumer delivery channel.
+// It is idempotent and safe to call concurrently. It is invoked by the owning
+// client when it is closed.
 func (ch *ClientChannel) closeWithError(err error) {
 	ch.mu.Lock()
 	for reqID, respCH := range ch.pending {
 		delete(ch.pending, reqID)
 		respCH <- response{Err: err}
 	}
+
+	entries := make([]*consumerEntry, 0, len(ch.consumers))
+	for _, e := range ch.consumers {
+		entries = append(entries, e)
+	}
+	ch.consumers = make(map[string]*consumerEntry) // clear; route sees nil -> Incoming fallback
 	ch.mu.Unlock()
+
+	for _, e := range entries {
+		e.closeOnce.Do(func() {
+			close(e.deliveries)
+		})
+	}
 
 	ch.closeOnce.Do(func() {
 		close(ch.Incoming)
@@ -105,10 +129,21 @@ func (ch *ClientChannel) route(env protocol.Envelope) error {
 	switch env.Type {
 	case protocol.BasicDeliverType:
 		var delivery protocol.Deliver
-		err := json.Unmarshal(env.Payload, &delivery)
-		if err != nil {
+		if err := json.Unmarshal(env.Payload, &delivery); err != nil {
 			return err
 		}
+
+		if delivery.ConsumerTag != "" {
+			ch.mu.Lock()
+			target := ch.consumers[delivery.ConsumerTag]
+			ch.mu.Unlock()
+			if target != nil {
+				target.deliveries <- delivery
+				return nil
+			}
+			// Unknown tag: fall through to the legacy shared sink.
+		}
+
 		ch.Incoming <- delivery
 		return nil
 	case protocol.BasicConsumeOKType:
@@ -263,13 +298,33 @@ func (ch *ClientChannel) Nack(deliveryTag uint16, requeue bool) error {
 		Requeue:     &r,
 	})
 }
+
+// nextConsumerTag mints a deterministic, channel-unique consumer tag. The
+// broker rejects duplicate tags on a channel, so a fresh tag per Consume call
+// guarantees uniqueness without relying on broker-side generation.
+func (ch *ClientChannel) nextConsumerTag() string {
+	ch.mu.Lock()
+	defer ch.mu.Unlock()
+	ch.consumerSeq++
+	return fmt.Sprintf("client-%d-consumer-%d", ch.id, ch.consumerSeq)
+}
+
+// Consume starts consuming queuename and returns the delivery channel for the
+// consumer. When the broker echoes a non-empty consumer tag, a dedicated
+// per-consumer channel is allocated, registered under the echoed tag, and
+// returned, so every basic.deliver carrying that tag lands here. When the
+// broker echoes an empty tag (pre-tag or legacy broker), the shared ch.Incoming
+// is returned, exactly as before, preserving backwards compatibility.
 func (ch *ClientChannel) Consume(queuename string, ctx context.Context) (chan protocol.Deliver, error) {
 	reqID := ch.client.nextRequestID()
 	respCh := ch.registerREQ(reqID)
 
+	tag := ch.nextConsumerTag()
 	if err := ch.client.writeChannelEnvelope(ch.id, protocol.BasicConsumeType, reqID, protocol.Consume{
-		Queue: queuename,
+		Queue:       queuename,
+		ConsumerTag: tag,
 	}); err != nil {
+		ch.unRegisterREQ(reqID)
 		return nil, err
 	}
 
@@ -278,7 +333,24 @@ func (ch *ClientChannel) Consume(queuename string, ctx context.Context) (chan pr
 		if res.Err != nil {
 			return nil, res.Err
 		}
-		return ch.Incoming, nil
+		consumeOK := res.Data.(protocol.ConsumeOK)
+
+		// Old broker / pre-tag protocol: nothing to key on, behave exactly
+		// like v0.2.0. This fallback is what keeps mixed-version combinations
+		// (guide §6) working.
+		if consumeOK.ConsumerTag == "" {
+			return ch.Incoming, nil
+		}
+
+		// Key on the broker-echoed tag (not the client tag) so the routing in
+		// route() stays correct even if a broker ever normalises tags.
+		perConsumer := &consumerEntry{
+			deliveries: make(chan protocol.Deliver, 100),
+		}
+		ch.mu.Lock()
+		ch.consumers[consumeOK.ConsumerTag] = perConsumer
+		ch.mu.Unlock()
+		return perConsumer.deliveries, nil
 	case <-ctx.Done():
 		ch.unRegisterREQ(reqID)
 		return nil, ctx.Err()

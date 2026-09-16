@@ -138,13 +138,24 @@ func (ch *ClientChannel) route(env protocol.Envelope) error {
 			target := ch.consumers[delivery.ConsumerTag]
 			ch.mu.Unlock()
 			if target != nil {
-				target.deliveries <- delivery
+				// Guard against a shutdown in progress: c.closed is closed at
+				// the start of Client.Close, before closeWithError runs. If
+				// the consumer channel buffer is full and nobody is reading,
+				// a plain channel send would block readLoop forever. Selecting
+				// on c.closed lets readLoop exit so Close can proceed.
+				select {
+				case target.deliveries <- delivery:
+				case <-ch.client.closed:
+				}
 				return nil
 			}
 			// Unknown tag: fall through to the legacy shared sink.
 		}
 
-		ch.Incoming <- delivery
+		select {
+		case ch.Incoming <- delivery:
+		case <-ch.client.closed:
+		}
 		return nil
 	case protocol.BasicConsumeOKType:
 		var consumeOK protocol.ConsumeOK

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sync"
 	"testing"
 	"time"
 
@@ -550,4 +551,75 @@ func TestF004_FirstDeliveryAfterConsumeOKNeverFallsBackToIncoming(t *testing.T) 
 		case <-time.After(10 * time.Millisecond):
 		}
 	}
+}
+
+// TestF004_CloseWhileRoutingDeliveriesDoesNotPanic floods per-consumer
+// deliveries while calling Client.Close concurrently, then asserts Close
+// completes without a send-on-closed-channel panic. This covers the latent
+// race between route (the only delivery sender) and closeWithError (called
+// by Client.Close after readLoop has exited).
+func TestF004_CloseWhileRoutingDeliveriesDoesNotPanic(t *testing.T) {
+	b := newF004Broker(t)
+	defer b.close()
+
+	c := connectTestClient(t, b.fakeBroker)
+	b.serve()
+
+	ctx := context.Background()
+	ch := b.openChannel(t, c, ctx, "close-routing")
+	perConsumer, tag := b.consumeOn(t, ch, "qa", ctx)
+
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		defer func() { recover() }()
+		for i := 0; ; i++ {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			b.deliver(t, ch, protocol.Deliver{
+				DeliveryTag: uint16(i + 1),
+				ConsumerTag: tag,
+				Body:        []byte("x"),
+			})
+		}
+	}()
+
+	// Let some deliveries pile up (per-consumer buffer is 100; route will
+	// block once it is full), then close the client from the test goroutine.
+	time.Sleep(50 * time.Millisecond)
+	if err := c.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	close(stop)
+
+	stopped := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(stopped)
+	}()
+	select {
+	case <-stopped:
+	case <-time.After(5 * time.Second):
+		t.Fatal("delivery flood goroutine did not stop after Close")
+	}
+
+	// Per-consumer channel must eventually close (closeWithError runs after
+	// readLoop has exited). Drain any buffered deliveries first.
+	drainDeadline := time.After(2 * time.Second)
+	for {
+		select {
+		case _, ok := <-perConsumer:
+			if !ok {
+				goto done
+			}
+		case <-drainDeadline:
+			t.Fatal("per-consumer channel not closed after Client.Close")
+		}
+	}
+done:
 }

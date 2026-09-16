@@ -379,6 +379,6 @@ func (c *Client) handleChannelCloseOK(env protocol.Envelope) {
 		return
 	}
 
-	ch.resolve(env.RequestID, response{})
+	ch.resolve(env.RequestID, response{Err: fmt.Errorf("channel closed")})
 	ch.closeWithError(fmt.Errorf("channel closed"))
 }

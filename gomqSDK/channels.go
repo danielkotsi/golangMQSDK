@@ -148,13 +148,28 @@ func (ch *ClientChannel) route(env protocol.Envelope) error {
 		return nil
 	case protocol.BasicConsumeOKType:
 		var consumeOK protocol.ConsumeOK
-		err := json.Unmarshal(env.Payload, &consumeOK)
-		if err != nil {
+		if err := json.Unmarshal(env.Payload, &consumeOK); err != nil {
 			return err
 		}
-		ch.resolve(env.RequestID, response{
-			Data: consumeOK,
-		})
+
+		// Register the per-consumer channel here, on the readLoop goroutine,
+		// before resolving the pending consume. readLoop processes envelopes
+		// serially, so a listen tag can never be routed before its entry
+		// exists: no window where the first tagged delivery falls back to
+		// Incoming (F-004 review, Bug 2). The channel is handed to the caller
+		// through the response, so Consume needs no map write of its own.
+		var data any
+		if consumeOK.ConsumerTag != "" {
+			perConsumer := &consumerEntry{
+				deliveries: make(chan protocol.Deliver, 100),
+			}
+			ch.mu.Lock()
+			ch.consumers[consumeOK.ConsumerTag] = perConsumer
+			ch.mu.Unlock()
+			data = perConsumer.deliveries
+		}
+
+		ch.resolve(env.RequestID, response{Data: data})
 		return nil
 	case protocol.QueueDeclareOKType:
 		var declareOK protocol.QueueDeclareOK
@@ -333,24 +348,21 @@ func (ch *ClientChannel) Consume(queuename string, ctx context.Context) (chan pr
 		if res.Err != nil {
 			return nil, res.Err
 		}
-		consumeOK := res.Data.(protocol.ConsumeOK)
 
-		// Old broker / pre-tag protocol: nothing to key on, behave exactly
-		// like v0.2.0. This fallback is what keeps mixed-version combinations
-		// (guide §6) working.
-		if consumeOK.ConsumerTag == "" {
+		// The per-consumer channel is created and registered by route() on
+		// the readLoop goroutine; this caller only reads it back. Guard the
+		// assertion so an unexpected or nil Data surfaces as an error instead
+		// of a panic (F-004 review, Bug 1).
+		switch v := res.Data.(type) {
+		case chan protocol.Deliver:
+			return v, nil
+		case nil:
+			// Legacy broker echoed an empty tag: no per-consumer channel was
+			// created. Fall back to the shared Incoming, exactly like v0.2.0.
 			return ch.Incoming, nil
+		default:
+			return nil, fmt.Errorf("broker returned unexpected response to consume: %T", res.Data)
 		}
-
-		// Key on the broker-echoed tag (not the client tag) so the routing in
-		// route() stays correct even if a broker ever normalises tags.
-		perConsumer := &consumerEntry{
-			deliveries: make(chan protocol.Deliver, 100),
-		}
-		ch.mu.Lock()
-		ch.consumers[consumeOK.ConsumerTag] = perConsumer
-		ch.mu.Unlock()
-		return perConsumer.deliveries, nil
 	case <-ctx.Done():
 		ch.unRegisterREQ(reqID)
 		return nil, ctx.Err()

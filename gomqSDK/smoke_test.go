@@ -205,8 +205,8 @@ func TestClientChannelClose(t *testing.T) {
 		fb.send(prepareEnvelope(t, ch.id, env.RequestID, protocol.ChannelCloseOKType, protocol.ChannelCloseOK{ID: 1}))
 	}()
 
-	if err := ch.Close(ctx); err != nil {
-		t.Fatalf("ch.Close: %v", err)
+	if err := ch.Close(ctx); err == nil {
+		t.Fatal("ch.Close: expected channel.close-ok to surface a 'channel closed' error, got nil")
 	}
 
 	select {

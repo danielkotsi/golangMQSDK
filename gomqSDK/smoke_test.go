@@ -205,8 +205,8 @@ func TestClientChannelClose(t *testing.T) {
 		fb.send(prepareEnvelope(t, ch.id, env.RequestID, protocol.ChannelCloseOKType, protocol.ChannelCloseOK{ID: 1}))
 	}()
 
-	if err := ch.Close(ctx); err != nil {
-		t.Fatalf("ch.Close: %v", err)
+	if err := ch.Close(ctx); err == nil {
+		t.Fatal("ch.Close: expected channel.close-ok to surface a 'channel closed' error, got nil")
 	}
 
 	select {
@@ -220,6 +220,36 @@ func TestClientChannelClose(t *testing.T) {
 	c.mu.Unlock()
 	if stillThere {
 		t.Fatal("channel still registered after Close")
+	}
+}
+
+// TestOpenChannelExpiredContextReturnsDeadlineExceeded verifies that an
+// unanswered channel.open with a timed-out context returns
+// context.DeadlineExceeded without a nil-pointer panic (review:
+// docs/reviews/BUG_OpenChannel_timeout_nil_pointer.md).
+func TestOpenChannelExpiredContextReturnsDeadlineExceeded(t *testing.T) {
+	fb := newFakeBroker(t)
+	defer fb.close()
+
+	c := connectTestClient(t, fb)
+	defer c.Close()
+
+	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancel()
+
+	ch, err := c.OpenChannel(ctx)
+	if err != context.DeadlineExceeded {
+		t.Fatalf("expected context.DeadlineExceeded, got %v", err)
+	}
+	if ch != nil {
+		t.Fatal("expected nil channel on timeout")
+	}
+
+	c.mu.Lock()
+	n := len(c.channels)
+	c.mu.Unlock()
+	if n != 0 {
+		t.Fatalf("expected no leftover channels after timeout, got %d", n)
 	}
 }
 

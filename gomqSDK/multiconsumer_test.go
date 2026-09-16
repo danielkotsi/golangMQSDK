@@ -3,6 +3,7 @@ package gomqSDK
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"testing"
 	"time"
 
@@ -351,6 +352,124 @@ func TestF004_CloseClosesPerConsumerChannels(t *testing.T) {
 	for _, cc := range []chan protocol.Deliver{chanA, chanB, ch.Incoming} {
 		if _, ok := <-cc; ok {
 			t.Error("channel still open after Close")
+		}
+	}
+}
+
+// TestF004_CloseWhileConsumePendingReturnsError verifies that when the broker
+// closes the channel while a Consume is waiting for basic.consume-ok, the
+// caller sees an error instead of a panic (F-004 review, Bug 1).
+func TestF004_CloseWhileConsumePendingReturnsError(t *testing.T) {
+	b := newF004Broker(t)
+	defer b.close()
+
+	c := connectTestClient(t, b.fakeBroker)
+	b.serve()
+	defer c.Close()
+
+	ctx := context.Background()
+	ch := b.openChannel(t, c, ctx, "close-pending")
+
+	type result struct {
+		c   chan protocol.Deliver
+		err error
+	}
+	resCh := make(chan result, 1)
+	go func() {
+		got, err := ch.Consume("qa", ctx)
+		resCh <- result{c: got, err: err}
+	}()
+
+	env := b.nextEnvelope(t, protocol.BasicConsumeType, "consume canceled by close")
+
+	// Respond with channel.close-ok echoing the consume's RequestID — the
+	// real broker can do this during an unsolicited channel close.
+	b.send(prepareEnvelope(t, ch.id, env.RequestID, protocol.ChannelCloseOKType,
+		protocol.ChannelCloseOK{ID: ch.id}))
+
+	res := <-resCh
+	if res.err == nil {
+		t.Fatal("expected Consume to return an error when the channel closes before consume-ok")
+	}
+	if res.c != nil {
+		t.Fatal("expected no channel from a Consume canceled by channel close")
+	}
+}
+
+// TestF004_FirstDeliveryAfterConsumeOKNeverFallsBackToIncoming stress-tests the
+// race between Consume returning and route registering the per-consumer channel
+// (F-004 review, Bug 2). A back-to-back consume-ok + basic.deliver must always
+// route the first delivery to the per-consumer channel, never to Incoming.
+func TestF004_FirstDeliveryAfterConsumeOKNeverFallsBackToIncoming(t *testing.T) {
+	b := newF004Broker(t)
+	defer b.close()
+
+	c := connectTestClient(t, b.fakeBroker)
+	b.serve()
+	defer c.Close()
+
+	ctx := context.Background()
+	ch := b.openChannel(t, c, ctx, "first-delivery")
+
+	const iterations = 100
+	for i := 0; i < iterations; i++ {
+		tag := fmt.Sprintf("c-%d", i)
+		queue := fmt.Sprintf("q-%d", i)
+
+		type result struct {
+			c   chan protocol.Deliver
+			err error
+		}
+		resCh := make(chan result, 1)
+		go func() {
+			got, err := ch.Consume(queue, ctx)
+			resCh <- result{c: got, err: err}
+		}()
+
+		env := b.nextEnvelope(t, protocol.BasicConsumeType, fmt.Sprintf("consume %d", i))
+
+		// Respond with the echoed consumer tag, then immediately queue the first
+		// delivery with that same tag. With the old (non-racy) registration this
+		// always lands on the per-consumer channel; without it, the first
+		// delivery sometimes fell through to Incoming.
+		b.send(prepareEnvelope(t, env.ChannelID, env.RequestID, protocol.BasicConsumeOKType,
+			protocol.ConsumeOK{ConsumerTag: tag}))
+		b.send(prepareEnvelope(t, env.ChannelID, 0, protocol.BasicDeliverType,
+			protocol.Deliver{
+				DeliveryTag: uint16(i + 1),
+				ConsumerTag: tag,
+				Body:        []byte("first"),
+			}))
+
+		res := <-resCh
+		if res.err != nil {
+			t.Fatalf("iteration %d: consume: %v", i, res.err)
+		}
+		if res.c == ch.Incoming {
+			t.Fatalf("iteration %d: Consume returned Incoming, expected per-consumer channel", i)
+		}
+
+		// The delivery must arrive on the per-consumer channel.
+		select {
+		case d, ok := <-res.c:
+			if !ok {
+				t.Fatalf("iteration %d: per-consumer channel closed", i)
+			}
+			if string(d.Body) != "first" {
+				t.Fatalf("iteration %d: got body=%q, want %q", i, d.Body, "first")
+			}
+			if d.ConsumerTag != tag {
+				t.Fatalf("iteration %d: got tag=%q, want %q", i, d.ConsumerTag, tag)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatalf("iteration %d: delivery never arrived on per-consumer channel", i)
+		}
+
+		// Incoming must not have received the delivery.
+		select {
+		case d := <-ch.Incoming:
+			t.Fatalf("iteration %d: delivery leaked to Incoming: %q", i, d.Body)
+		case <-time.After(10 * time.Millisecond):
 		}
 	}
 }

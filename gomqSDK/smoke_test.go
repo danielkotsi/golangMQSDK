@@ -223,6 +223,36 @@ func TestClientChannelClose(t *testing.T) {
 	}
 }
 
+// TestOpenChannelExpiredContextReturnsDeadlineExceeded verifies that an
+// unanswered channel.open with a timed-out context returns
+// context.DeadlineExceeded without a nil-pointer panic (review:
+// docs/reviews/BUG_OpenChannel_timeout_nil_pointer.md).
+func TestOpenChannelExpiredContextReturnsDeadlineExceeded(t *testing.T) {
+	fb := newFakeBroker(t)
+	defer fb.close()
+
+	c := connectTestClient(t, fb)
+	defer c.Close()
+
+	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancel()
+
+	ch, err := c.OpenChannel(ctx)
+	if err != context.DeadlineExceeded {
+		t.Fatalf("expected context.DeadlineExceeded, got %v", err)
+	}
+	if ch != nil {
+		t.Fatal("expected nil channel on timeout")
+	}
+
+	c.mu.Lock()
+	n := len(c.channels)
+	c.mu.Unlock()
+	if n != 0 {
+		t.Fatalf("expected no leftover channels after timeout, got %d", n)
+	}
+}
+
 func prepareEnvelope(t *testing.T, channelID, reqID uint16, typ protocol.Method, payload any) protocol.Envelope {
 	t.Helper()
 	b, err := json.Marshal(payload)

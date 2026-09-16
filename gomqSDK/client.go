@@ -211,7 +211,7 @@ func (c *Client) OpenChannel(ctx context.Context) (ch *ClientChannel, err error)
 		return clientCh, nil
 	case <-ctx.Done():
 		delete(c.channels, id)
-		ch.unRegisterREQ(reqID)
+		clientCh.unRegisterREQ(reqID)
 		c.writeEnvelope(protocol.ChannelCloseType, c.nextRequestID(), protocol.ChannelClose{
 			ID: id,
 		})

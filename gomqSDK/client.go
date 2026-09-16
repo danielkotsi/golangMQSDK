@@ -45,6 +45,7 @@ type Client struct {
 	writeCh      chan writeRequest
 	closeOnce    sync.Once
 	closed       chan struct{}
+	readLoopDone chan struct{}
 	incomingOnce sync.Once
 }
 
@@ -60,7 +61,8 @@ func (c *Client) closeIncoming() {
 //
 // It resolves every pending request so callers blocked in OpenChannel,
 // DeclareQueue, DeclareExchange, BindQueue or Consume return an error instead
-// of hanging, and closes each channel's Incoming delivery channel.
+// of hanging, and closes each channel's Incoming delivery channel and every
+// per-consumer delivery channel.
 func (c *Client) Close() error {
 	c.shutdown()
 
@@ -70,7 +72,25 @@ func (c *Client) Close() error {
 		channels = append(channels, ch)
 	}
 	c.channels = make(map[uint16]*ClientChannel)
+
+	var conn net.Conn
+	if c.conn != nil {
+		conn = c.conn
+		c.conn = nil
+	}
 	c.mu.Unlock()
+
+	// Unblock the readLoop (stuck on the socket read) and wait for it to
+	// exit before closing delivery channels. route — the only goroutine that
+	// sends on Incoming and on per-consumer channels — runs on readLoop, so
+	// once it has exited nothing can send on a channel just being closed
+	// (send-on-closed-channel race).
+	if conn != nil {
+		conn.Close()
+	}
+	if c.readLoopDone != nil {
+		<-c.readLoopDone
+	}
 
 	for _, ch := range channels {
 		ch.closeWithError(fmt.Errorf("connection closed"))
@@ -78,13 +98,6 @@ func (c *Client) Close() error {
 
 	c.closeIncoming()
 
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.conn != nil {
-		err := c.conn.Close()
-		c.conn = nil
-		return err
-	}
 	return nil
 }
 
@@ -117,8 +130,9 @@ func dial(address string, cfg Config) (*Client, error) {
 		password:   cfg.Password,
 		Incoming:   make(chan Event, 100),
 
-		writeCh: make(chan writeRequest, 64),
-		closed:  make(chan struct{}),
+		writeCh:      make(chan writeRequest, 64),
+		closed:       make(chan struct{}),
+		readLoopDone: make(chan struct{}),
 	}
 	go c.writePump()
 
@@ -317,6 +331,7 @@ func (c *Client) weadEnvelope(env *protocol.Envelope) error {
 }
 
 func (c *Client) readLoop() {
+	defer close(c.readLoopDone)
 	defer c.shutdown()
 	for {
 		var env protocol.Envelope

@@ -152,22 +152,22 @@ func (ch *ClientChannel) route(env protocol.Envelope) error {
 			return err
 		}
 
-		// Register the per-consumer channel here, on the readLoop goroutine,
-		// before resolving the pending consume. readLoop processes envelopes
-		// serially, so a listen tag can never be routed before its entry
-		// exists: no window where the first tagged delivery falls back to
-		// Incoming (F-004 review, Bug 2). The channel is handed to the caller
-		// through the response, so Consume needs no map write of its own.
+		// The per-consumer entry is pre-registered by Consume before the
+		// basic.consume request is sent, so any basic.deliver for this tag
+		// that arrives before consume-ok is already routed correctly. Here
+		// we only need to find the entry and hand its channel back through
+		// the response so Consume can return it to the caller.
 		var data any
 		if consumeOK.ConsumerTag != "" {
-			perConsumer := &consumerEntry{
-				deliveries: make(chan protocol.Deliver, 100),
-			}
 			ch.mu.Lock()
-			ch.consumers[consumeOK.ConsumerTag] = perConsumer
+			entry := ch.consumers[consumeOK.ConsumerTag]
 			ch.mu.Unlock()
-			data = perConsumer.deliveries
+			if entry != nil {
+				data = entry.deliveries
+			}
 		}
+		// Legacy broker (empty tag): data stays nil → Consume falls back
+		// to ch.Incoming after cleaning up the pre-registered entry.
 
 		ch.resolve(env.RequestID, response{Data: data})
 		return nil
@@ -325,20 +325,32 @@ func (ch *ClientChannel) nextConsumerTag() string {
 }
 
 // Consume starts consuming queuename and returns the delivery channel for the
-// consumer. When the broker echoes a non-empty consumer tag, a dedicated
-// per-consumer channel is allocated, registered under the echoed tag, and
-// returned, so every basic.deliver carrying that tag lands here. When the
-// broker echoes an empty tag (pre-tag or legacy broker), the shared ch.Incoming
-// is returned, exactly as before, preserving backwards compatibility.
+// consumer. The entry is pre-registered in ch.consumers before basic.consume is
+// sent, so any basic.deliver carrying the tag that arrives before consume-ok is
+// routed correctly (pre-queued-delivery scenario, F-004.1). When the broker
+// echoes an empty tag (pre-tag or legacy broker), the entry is cleaned up and
+// the shared ch.Incoming is returned, preserving backwards compatibility.
 func (ch *ClientChannel) Consume(queuename string, ctx context.Context) (chan protocol.Deliver, error) {
 	reqID := ch.client.nextRequestID()
 	respCh := ch.registerREQ(reqID)
 
 	tag := ch.nextConsumerTag()
+	perConsumer := make(chan protocol.Deliver, 100)
+
+	// Pre-register: the entry must exist before basic.consume is sent so that
+	// any basic.deliver for this tag that arrives before consume-ok is routed
+	// to the per-consumer channel, not the shared Incoming.
+	ch.mu.Lock()
+	ch.consumers[tag] = &consumerEntry{deliveries: perConsumer}
+	ch.mu.Unlock()
+
 	if err := ch.client.writeChannelEnvelope(ch.id, protocol.BasicConsumeType, reqID, protocol.Consume{
 		Queue:       queuename,
 		ConsumerTag: tag,
 	}); err != nil {
+		ch.mu.Lock()
+		delete(ch.consumers, tag)
+		ch.mu.Unlock()
 		ch.unRegisterREQ(reqID)
 		return nil, err
 	}
@@ -346,24 +358,34 @@ func (ch *ClientChannel) Consume(queuename string, ctx context.Context) (chan pr
 	select {
 	case res := <-respCh:
 		if res.Err != nil {
+			ch.mu.Lock()
+			delete(ch.consumers, tag)
+			ch.mu.Unlock()
 			return nil, res.Err
 		}
 
-		// The per-consumer channel is created and registered by route() on
-		// the readLoop goroutine; this caller only reads it back. Guard the
-		// assertion so an unexpected or nil Data surfaces as an error instead
-		// of a panic (F-004 review, Bug 1).
+		// Guard the assertion so an unexpected or nil Data surfaces as an
+		// error instead of a panic (F-004 review, Bug 1).
 		switch v := res.Data.(type) {
 		case chan protocol.Deliver:
 			return v, nil
 		case nil:
-			// Legacy broker echoed an empty tag: no per-consumer channel was
-			// created. Fall back to the shared Incoming, exactly like v0.2.0.
+			// Legacy broker echoed an empty tag: entry was pre-registered
+			// for nothing. Clean up and return the shared Incoming.
+			ch.mu.Lock()
+			delete(ch.consumers, tag)
+			ch.mu.Unlock()
 			return ch.Incoming, nil
 		default:
+			ch.mu.Lock()
+			delete(ch.consumers, tag)
+			ch.mu.Unlock()
 			return nil, fmt.Errorf("broker returned unexpected response to consume: %T", res.Data)
 		}
 	case <-ctx.Done():
+		ch.mu.Lock()
+		delete(ch.consumers, tag)
+		ch.mu.Unlock()
 		ch.unRegisterREQ(reqID)
 		return nil, ctx.Err()
 	}

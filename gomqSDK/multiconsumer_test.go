@@ -285,6 +285,73 @@ func TestF004_UnknownConsumerTagFallsBackToIncoming(t *testing.T) {
 	}
 }
 
+// TestF004_DeliveryBeforeConsumeOKRoutesToPerConsumerChannel covers the F-004.1
+// pre-queued-delivery ordering: the broker's dispatchLoop can write a
+// basic.deliver before the connection goroutine writes basic.consume-ok. The
+// per-consumer entry is pre-registered by Consume, so such an early delivery
+// must route to the per-consumer channel, never fall through to Incoming.
+func TestF004_DeliveryBeforeConsumeOKRoutesToPerConsumerChannel(t *testing.T) {
+	b := newF004Broker(t)
+	defer b.close()
+
+	c := connectTestClient(t, b.fakeBroker)
+	b.serve()
+	defer c.Close()
+
+	ctx := context.Background()
+	ch := b.openChannel(t, c, ctx, "pre-queued")
+
+	type result struct {
+		c   chan protocol.Deliver
+		err error
+	}
+	resCh := make(chan result, 1)
+	go func() {
+		got, err := ch.Consume("preq", ctx)
+		resCh <- result{c: got, err: err}
+	}()
+
+	env := b.nextEnvelope(t, protocol.BasicConsumeType, "consume preq")
+	var req protocol.Consume
+	if err := json.Unmarshal(env.Payload, &req); err != nil {
+		t.Fatalf("unmarshal consume request: %v", err)
+	}
+	if req.ConsumerTag == "" {
+		t.Fatal("expected a client-authoritative consumer tag, got empty")
+	}
+
+	// Deliver BEFORE consume-ok: the exact F-004.1 ordering.
+	b.send(prepareEnvelope(t, env.ChannelID, 0, protocol.BasicDeliverType, protocol.Deliver{
+		DeliveryTag: 1,
+		ConsumerTag: req.ConsumerTag,
+		Body:        []byte("pre-queued"),
+	}))
+	b.send(prepareEnvelope(t, env.ChannelID, env.RequestID, protocol.BasicConsumeOKType,
+		protocol.ConsumeOK{ConsumerTag: req.ConsumerTag}))
+
+	res := <-resCh
+	if res.err != nil {
+		t.Fatalf("consume: %v", res.err)
+	}
+	if res.c == ch.Incoming {
+		t.Fatal("Consume returned Incoming, expected per-consumer channel")
+	}
+
+	got, ok := recvDeliver(t, res.c, "pre-queued delivery")
+	if !ok {
+		t.Fatal("per-consumer channel closed unexpectedly")
+	}
+	if string(got.Body) != "pre-queued" {
+		t.Errorf("got body=%q, want pre-queued", got.Body)
+	}
+
+	select {
+	case d := <-ch.Incoming:
+		t.Fatalf("pre-queued delivery leaked to Incoming: %q", d.Body)
+	case <-time.After(300 * time.Millisecond):
+	}
+}
+
 // TestF004_DuplicateTagSurfacedAsError asserts that when the broker rejects a
 // basic.consume (e.g. duplicate tag), Consume returns the broker error and
 // nothing is left registered.
@@ -397,9 +464,9 @@ func TestF004_CloseWhileConsumePendingReturnsError(t *testing.T) {
 }
 
 // TestF004_FirstDeliveryAfterConsumeOKNeverFallsBackToIncoming stress-tests the
-// race between Consume returning and route registering the per-consumer channel
-// (F-004 review, Bug 2). A back-to-back consume-ok + basic.deliver must always
-// route the first delivery to the per-consumer channel, never to Incoming.
+// ordering where basic.deliver immediately follows basic.consume-ok. Registration
+// is pre-created by Consume before the request is sent (F-004.1), so the first
+// delivery must always route to the per-consumer channel, never to Incoming.
 func TestF004_FirstDeliveryAfterConsumeOKNeverFallsBackToIncoming(t *testing.T) {
 	b := newF004Broker(t)
 	defer b.close()
@@ -413,7 +480,6 @@ func TestF004_FirstDeliveryAfterConsumeOKNeverFallsBackToIncoming(t *testing.T) 
 
 	const iterations = 100
 	for i := 0; i < iterations; i++ {
-		tag := fmt.Sprintf("c-%d", i)
 		queue := fmt.Sprintf("q-%d", i)
 
 		type result struct {
@@ -428,10 +494,22 @@ func TestF004_FirstDeliveryAfterConsumeOKNeverFallsBackToIncoming(t *testing.T) 
 
 		env := b.nextEnvelope(t, protocol.BasicConsumeType, fmt.Sprintf("consume %d", i))
 
+		// The broker echoes the tag the client requested. Consume pre-registers
+		// its own client-authoritative tag, so the echoed tag must be that
+		// requested tag (F-004.1), not an arbitrary one.
+		var req protocol.Consume
+		if err := json.Unmarshal(env.Payload, &req); err != nil {
+			t.Fatalf("iteration %d: unmarshal consume request: %v", i, err)
+		}
+		if req.ConsumerTag == "" {
+			t.Fatalf("iteration %d: expected a client-authoritative consumer tag, got empty", i)
+		}
+		tag := req.ConsumerTag
+
 		// Respond with the echoed consumer tag, then immediately queue the first
-		// delivery with that same tag. With the old (non-racy) registration this
-		// always lands on the per-consumer channel; without it, the first
-		// delivery sometimes fell through to Incoming.
+		// delivery with that same tag. The entry is pre-registered by Consume
+		// before the request is sent, so the first delivery must always land on
+		// the per-consumer channel, never on Incoming.
 		b.send(prepareEnvelope(t, env.ChannelID, env.RequestID, protocol.BasicConsumeOKType,
 			protocol.ConsumeOK{ConsumerTag: tag}))
 		b.send(prepareEnvelope(t, env.ChannelID, 0, protocol.BasicDeliverType,
